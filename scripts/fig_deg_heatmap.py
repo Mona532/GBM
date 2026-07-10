@@ -25,8 +25,8 @@ mpl.rcParams.update({
 root = "E:/GBM/results"
 df   = pd.read_csv(f"{root}/posdev_DEG_heatmap_data.csv")
 
-# program display order
-progs = ["Myeloid", "HypoxicVascular", "Oligodendrocyte"]
+# program display order (all 5)
+progs = ["Myeloid", "HypoxicVascular", "Oligodendrocyte", "Inflammatory", "Neuronal"]
 df["program"] = pd.Categorical(df["program"], categories=progs, ordered=True)
 df = df.sort_values("program")
 
@@ -40,7 +40,7 @@ ends  = [grp.count(p) for p in progs]
 cum   = np.cumsum(ends)
 starts = [0] + list(cum[:-1])
 
-fig, ax = plt.subplots(figsize=(3.2, 0.22 * Z.shape[0] + 1.2))
+fig, ax = plt.subplots(figsize=(4.5, 0.18 * Z.shape[0] + 1.2))
 im = ax.imshow(Z.values, cmap="RdBu_r", vmin=-1.5, vmax=1.5, aspect="auto")
 
 ax.set_xticks(range(len(progs)))

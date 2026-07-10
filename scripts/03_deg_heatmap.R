@@ -23,15 +23,15 @@ idmap <- c(C1 = "Inflammatory", C2 = "Myeloid",  C3 = "Neuronal",
            C4 = "Oligodendrocyte", C5 = "HypoxicVascular")
 lab <- setNames(idmap[as.character(wt$dominant)], wt$unit_id)
 
-# programs to include (must have ≥20 significant DEGs)
-progs <- c(C2 = "Myeloid", C5 = "HypoxicVascular", C4 = "Oligodendrocyte")
-
-# top-20 DEGs per program by logFC
+# all 5 programs, top 10 DEGs each by logFC
+progs <- c(C1 = "Inflammatory", C2 = "Myeloid", C3 = "Neuronal",
+           C4 = "Oligodendrocyte", C5 = "HypoxicVascular")
+topN <- 10
 genes <- unlist(lapply(names(progs), function(p) {
-  head(deg$SYMBOL[deg$program == p], 20)
+  head(deg$SYMBOL[deg$program == p], topN)
 }))
 genes <- intersect(genes, rownames(cnt))
-prog_vec <- rep(unname(progs), each = 20)
+prog_vec <- rep(unname(progs), each = topN)
 prog_vec <- prog_vec[seq_along(genes)]
 
 # per-program mean logCPM (subset genes only, pre-computed lib sizes)
