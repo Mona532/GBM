@@ -19,13 +19,13 @@ wt   <- read.csv(file.path(root, "posdev_tau03_rank5_weights.csv"),
                  check.names = FALSE)
 
 # program mapping: C-code → display name
-idmap <- c(C1 = "Inflammatory", C2 = "Myeloid",  C3 = "Neuronal",
-           C4 = "Oligodendrocyte", C5 = "HypoxicVascular")
+idmap <- c(C1 = "ILC-NK", C2 = "Myeloid",  C3 = "TLS-structural",
+           C4 = "Lymphoid-Glial", C5 = "T-cell")
 lab <- setNames(idmap[as.character(wt$dominant)], wt$unit_id)
 
 # all 5 programs, top 10 DEGs each by logFC
-progs <- c(C1 = "Inflammatory", C2 = "Myeloid", C3 = "Neuronal",
-           C4 = "Oligodendrocyte", C5 = "HypoxicVascular")
+progs <- c(C1 = "ILC-NK", C2 = "Myeloid", C3 = "TLS-structural",
+           C4 = "Lymphoid-Glial", C5 = "T-cell")
 topN <- 10
 genes <- unlist(lapply(names(progs), function(p) {
   head(deg$SYMBOL[deg$program == p], topN)

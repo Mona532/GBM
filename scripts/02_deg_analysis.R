@@ -33,11 +33,11 @@ wt     <- read.csv(file.path(root, "posdev_tau03_rank5_weights.csv"),
 
 # program identity (transcription-driven names, matched to DEG evidence)
 idmap <- c(
-  C1 = "Inflammatory",
+  C1 = "ILC-NK",
   C2 = "Myeloid",
-  C3 = "Neuronal",
-  C4 = "Oligodendrocyte",
-  C5 = "HypoxicVascular"
+  C3 = "TLS-structural",
+  C4 = "Lymphoid-Glial",
+  C5 = "T-cell"
 )
 
 # ---- prepare data ----
