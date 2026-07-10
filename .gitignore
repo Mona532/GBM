@@ -1,0 +1,17 @@
+*.rds
+*.h5ad
+*.h5
+*.jpg
+*.pdf
+results/
+spatial_data_visium/
+Pan-Cancer_Spatial_Atlas_TLS-main/
+ILC_review/
+REF/
+article/
+R/
+tmp_*.R
+tmp_*.py
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,360 @@
+library(Matrix)
+library(SpaLinker)
+library(rhdf5)
+library(Seurat)
+
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
+}
+
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 2) {
+  stop("Usage: Rscript score_visium_tls_spalinker_official_relaxed_cut01.R <input_dir> <output_dir> [regex_pattern]")
+}
+
+input_dir  <- normalizePath(args[[1]], winslash = "/", mustWork = TRUE)
+output_dir <- normalizePath(args[[2]], winslash = "/", mustWork = FALSE)
+pattern    <- if (length(args) >= 3) args[[3]] else "\\.h5ad$"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---- HDF5 helpers ----
+read_h5ad_categorical <- function(file, group_path) {
+  categories <- h5read(file, paste0(group_path, "/categories"))
+  codes      <- h5read(file, paste0(group_path, "/codes"))
+  categories <- as.character(categories)
+  codes      <- as.integer(codes)
+  out <- rep(NA_character_, length(codes))
+  valid <- codes >= 0
+  out[valid] <- categories[codes[valid] + 1L]
+  out
+}
+
+read_h5ad_matrix <- function(file) {
+  data    <- h5read(file, "/X/data")
+  indices <- h5read(file, "/X/indices")
+  indptr  <- h5read(file, "/X/indptr")
+  n_obs   <- length(h5read(file, "/obs/_index"))
+  n_vars  <- length(h5read(file, "/var/_index"))
+  row_counts <- diff(indptr)
+  i <- rep(seq_len(n_obs), row_counts)
+  j <- as.integer(indices) + 1L
+  sparseMatrix(i = i, j = j, x = as.numeric(data), dims = c(n_obs, n_vars))
+}
+
+read_h5ad_minimal <- function(file) {
+  obs_names     <- as.character(h5read(file, "/obs/_index"))
+  var_names     <- as.character(h5read(file, "/var/_index"))
+  feature_types <- tryCatch(read_h5ad_categorical(file, "/var/feature_types"),
+                            error = function(e) rep("Gene Expression", length(var_names)))
+
+  # pixel coords (for plotting)
+  coords_pixel <- t(h5read(file, "/obsm/spatial"))
+  colnames(coords_pixel) <- c("x_pixel", "y_pixel")
+  rownames(coords_pixel) <- obs_names
+
+  obs <- data.frame(
+    in_tissue   = as.integer(h5read(file, "/obs/in_tissue")),
+    array_row   = as.integer(h5read(file, "/obs/array_row")),
+    array_col   = as.integer(h5read(file, "/obs/array_col")),
+    sample      = tryCatch(read_h5ad_categorical(file, "/obs/sample"),
+                           error = function(e) rep("unknown", length(obs_names))),
+    sample_name = tryCatch(read_h5ad_categorical(file, "/obs/sample_name"),
+                           error = function(e) rep("unknown", length(obs_names))),
+    row.names   = obs_names,
+    check.names = FALSE
+  )
+
+  x <- read_h5ad_matrix(file)
+  rownames(x) <- obs_names
+  colnames(x) <- var_names
+
+  # Read ILC cell2location results from obsm
+  ilc_mean <- tryCatch(t(h5read(file, "/obsm/c2l_ilc_mean")), error = function(e) NULL)
+  ilc_types <- tryCatch(as.character(h5read(file, "/uns/c2l_ilc_cell_types")), error = function(e) NULL)
+  if (!is.null(ilc_mean) && !is.null(ilc_types)) {
+    colnames(ilc_mean) <- ilc_types
+    rownames(ilc_mean) <- obs_names
+    message(sprintf("  ILC obsm: %d cell types", length(ilc_types)))
+  }
+
+  # Filter to in_tissue spots only
+  keep <- obs$in_tissue == 1
+  message(sprintf("  in_tissue filter: %d / %d spots kept", sum(keep), length(keep)))
+
+  list(
+    X              = x[keep, , drop = FALSE],
+    obs            = obs[keep, , drop = FALSE],
+    coords_pixel   = coords_pixel[keep, , drop = FALSE],
+    var_names      = var_names,
+    feature_types  = feature_types,
+    ilc_mean       = if (!is.null(ilc_mean)) ilc_mean[keep, , drop = FALSE] else NULL,
+    ilc_types      = ilc_types
+  )
+}
+
+# ---- Feature selection with strict regex ----
+sum_selected_features <- function(mat, names, pattern) {
+  keep <- grepl(pattern, names, ignore.case = TRUE, perl = TRUE)
+  if (!any(keep)) {
+    return(list(values = rep(0, nrow(mat)), features = character(0)))
+  }
+  vals <- Matrix::rowSums(mat[, keep, drop = FALSE])
+  list(values = as.numeric(vals), features = names[keep])
+}
+
+# ---- Dominant niche (handle all-zero spots) ----
+dominant_niche_cluster <- function(mat, feature_names) {
+  if (ncol(mat) == 0) return(rep("all", nrow(mat)))
+  rs <- Matrix::rowSums(mat)
+  idx <- max.col(as.matrix(mat), ties.method = "first")
+  cluster_labels <- feature_names[idx]
+  cluster_labels[rs == 0 | is.na(rs)] <- "all"
+  cluster_labels[cluster_labels == ""]  <- "all"
+  cluster_labels
+}
+
+# ---- TLS signature scoring (matches GsetScore source: counts slot) ----
+get_tls_signature_scores <- function(expr) {
+  data("CuratedSig.lt", package = "SpaLinker")
+  geneset <- CuratedSig.lt[["Immune"]][["TLS"]]
+  keep <- vapply(geneset, function(x) length(intersect(x, rownames(expr))) > 0, logical(1))
+  geneset2 <- geneset[keep]
+
+  temp <- CreateSeuratObject(counts = expr)
+  n1 <- ncol(temp@meta.data)
+
+  avg_expr <- Matrix::rowMeans(GetAssayData(temp, assay = "RNA", slot = "counts"))
+  candidate_bins <- unique(c(
+    24L, 20L, 16L, 12L, 8L, 6L, 4L, 3L, 2L,
+    min(24L, max(2L, length(unique(avg_expr)) - 1L))
+  ))
+  score_obj <- NULL
+  for (nbin in candidate_bins) {
+    score_obj <- tryCatch(
+      suppressWarnings(
+        AddModuleScore(
+          object   = temp,
+          assay    = "RNA",
+          slot     = "counts",
+          features = geneset2,
+          name     = names(geneset2),
+          nbin     = nbin,
+          verbose  = FALSE
+        )
+      ),
+      error = function(e) NULL
+    )
+    if (!is.null(score_obj)) break
+  }
+  if (is.null(score_obj)) stop("Failed to calculate TLS signature scores with AddModuleScore")
+
+  n2    <- ncol(score_obj@meta.data)
+  score <- score_obj@meta.data[, (n1 + 1):n2, drop = FALSE]
+  colnames(score) <- names(geneset2)
+
+  res <- matrix(NA_real_, ncol = length(geneset), nrow = nrow(score))
+  rownames(res) <- rownames(score)
+  colnames(res) <- names(geneset)
+  res <- data.frame(res, check.names = FALSE)
+  res[, colnames(score)] <- score
+  res
+}
+
+# ---- Score one sample ----
+score_one <- function(file, out_root) {
+  sample_id  <- sub("\\.h5ad$", "", basename(file))
+  sample_dir <- file.path(out_root, sample_id)
+  out_csv    <- file.path(sample_dir, "tls_spot_scores_official_relaxed.csv")
+
+  if (file.exists(out_csv)) {
+    message("[skip] ", sample_id)
+    spot_df <- read.csv(out_csv, check.names = FALSE)
+    manifest_path <- file.path(sample_dir, "manifest.json")
+    manifest <- if (file.exists(manifest_path)) jsonlite::fromJSON(manifest_path) else list()
+    return(data.frame(
+      sample_id           = sample_id,
+      n_spots             = nrow(spot_df),
+      n_tls_spots         = sum(spot_df$TLS.region == "TLS"),
+      tls_fraction        = mean(spot_df$TLS.region == "TLS"),
+      tls_score_mean      = mean(spot_df$TLS.score, na.rm = TRUE),
+      tls_score_median    = median(spot_df$TLS.score, na.rm = TRUE),
+      has_b_or_plasma     = any(spot_df$Plasma_B_cells > 0),
+      b_or_plasma_features = paste(manifest$b_or_plasma_features %||% character(0), collapse = "; "),
+      t_features           = paste(manifest$t_features %||% character(0), collapse = "; "),
+      cluster_source       = manifest$cluster_source %||% "dominant_spatial_niche",
+      stringsAsFactors     = FALSE
+    ))
+  }
+
+  message("[score] ", sample_id)
+  dat <- read_h5ad_minimal(file)
+
+  gene_keep  <- dat$feature_types == "Gene Expression"
+  cell_keep  <- dat$feature_types == "Cell state abundances"
+  niche_keep <- dat$feature_types == "Spatial niche abundances"
+
+  expr <- t(dat$X[, gene_keep, drop = FALSE])
+  rownames(expr) <- make.unique(dat$var_names[gene_keep])
+  colnames(expr) <- rownames(dat$obs)
+
+  cell_mat <- dat$X[, cell_keep, drop = FALSE]
+  colnames(cell_mat) <- dat$var_names[cell_keep]
+  rownames(cell_mat) <- rownames(dat$obs)
+
+  niche_mat <- dat$X[, niche_keep, drop = FALSE]
+  colnames(niche_mat) <- dat$var_names[niche_keep]
+  rownames(niche_mat) <- rownames(dat$obs)
+
+  # ---- Cell type extraction: prefer ILC obsm if available ----
+  if (!is.null(dat$ilc_mean) && !is.null(dat$ilc_types)) {
+    # Use ILC-annotated obsm data directly
+    ilc_mat <- dat$ilc_mean
+    ilc_mat[is.na(ilc_mat)] <- 0
+    b_cols <- grep("^(B|Plasma)$", colnames(ilc_mat), value = TRUE)
+    t_cols <- grep("^(CD4_T|CD8_T|Tfh-like_CD4)$", colnames(ilc_mat), value = TRUE)
+    b_res <- list(
+      values = if(length(b_cols)) rowSums(ilc_mat[, b_cols, drop = FALSE]) else rep(0, nrow(ilc_mat)),
+      features = b_cols
+    )
+    t_res <- list(
+      values = if(length(t_cols)) rowSums(ilc_mat[, t_cols, drop = FALSE]) else rep(0, nrow(ilc_mat)),
+      features = t_cols
+    )
+    message("  [obsm ILC] B: ", paste(b_cols, collapse="; "),
+            " | T+ILC: ", paste(t_cols, collapse="; "))
+  } else {
+    # Fallback: regex from Cell state abundances in var
+    b_res <- sum_selected_features(
+      cell_mat, colnames(cell_mat),
+      "\\b(B[ ._]?cells?|Plasma[ ._]?cells?)\\b"
+    )
+    t_res <- sum_selected_features(
+      cell_mat, colnames(cell_mat),
+      "CD4\\+|CD8\\+[ ._]?T\\b|T[ ._]cells?\\b|T[ ._]reg\\b"
+    )
+    message("  [var] B/Plasma: ", paste(b_res$features, collapse = "; "))
+    message("  [var] T: ",        paste(t_res$features, collapse = "; "))
+  }
+
+  cluster <- dominant_niche_cluster(niche_mat, colnames(niche_mat))
+  names(cluster) <- rownames(dat$obs)
+
+  # ---- FIX 2: LC50 NA handling ----
+  sig  <- get_tls_signature_scores(expr)
+  lc50 <- sig[, "LC.50sig"]
+  lc50[is.na(lc50)] <- 0
+  names(lc50) <- colnames(expr)
+
+  lc50_genes <- CuratedSig.lt[["Immune"]][["TLS"]][["LC.50sig"]]
+  n_overlap  <- length(intersect(lc50_genes, rownames(expr)))
+  message("  LC50 overlap genes: ", n_overlap, " / ", length(lc50_genes))
+
+  # Co-distribution
+  codis_in <- data.frame(
+    "Plasma_B.cells" = b_res$values,
+    "T.cells"        = t_res$values,
+    row.names = rownames(dat$obs),
+    check.names = FALSE
+  )
+  codis  <- CalCellCodis(codis_in, sort = TRUE)
+  bt_col <- "Plasma_B.cells_T.cells"
+  bt     <- codis[, bt_col]
+
+  tls_input <- data.frame(
+    "Plasma_B.cells_T.cells" = bt,
+    "LC.50sig"               = lc50[rownames(dat$obs)],
+    row.names = rownames(dat$obs),
+    check.names = FALSE
+  )
+
+  # ---- FIX 3: Use array coords with hex correction for CalTLSfea ----
+  st_pos <- data.frame(
+    x = dat$obs$array_col,
+    y = dat$obs$array_row * sqrt(3),
+    row.names = rownames(dat$obs),
+    check.names = FALSE
+  )
+
+  tls <- CalTLSfea(
+    data       = tls_input,
+    st_pos     = st_pos,
+    cluster    = cluster,
+    cutoff     = 0.2,
+    filt.dist  = 4,
+    filt.spots = 2,
+    r.dist     = 2,
+    method     = "weighted",
+    layer.method = "mean",
+    adjust     = 2,
+    verbose    = FALSE
+  )
+
+  dir.create(sample_dir, recursive = TRUE, showWarnings = FALSE)
+
+  spot_df <- data.frame(
+    barcode                    = rownames(dat$obs),
+    sample_id                  = sample_id,
+    x_pixel                    = dat$coords_pixel[, "x_pixel"],
+    y_pixel                    = dat$coords_pixel[, "y_pixel"],
+    in_tissue                  = dat$obs$in_tissue,
+    array_row                  = dat$obs$array_row,
+    array_col                  = dat$obs$array_col,
+    dominant_niche_cluster     = cluster[rownames(dat$obs)],
+    Plasma_B_cells             = codis_in[, "Plasma_B.cells"],
+    T_cells                    = codis_in[, "T.cells"],
+    Plasma_B.cells_T.cells     = as.numeric(bt),
+    LC.50sig                   = lc50[rownames(dat$obs)],
+    TLS.score                  = tls$TLS.score[rownames(dat$obs)],
+    TLS.region                 = tls$TLS.region[rownames(dat$obs)],
+    check.names = FALSE
+  )
+  write.csv(spot_df, out_csv, row.names = FALSE)
+
+  summary_row <- data.frame(
+    sample_id           = sample_id,
+    n_spots             = nrow(spot_df),
+    n_tls_spots         = sum(spot_df$TLS.region == "TLS"),
+    tls_fraction        = mean(spot_df$TLS.region == "TLS"),
+    tls_score_mean      = mean(spot_df$TLS.score, na.rm = TRUE),
+    tls_score_median    = median(spot_df$TLS.score, na.rm = TRUE),
+    has_b_or_plasma     = any(codis_in[, "Plasma_B.cells"] > 0),
+    b_or_plasma_features = paste(b_res$features, collapse = "; "),
+    t_features           = paste(t_res$features, collapse = "; "),
+    cluster_source       = "dominant_spatial_niche",
+    lc50_overlap_genes   = n_overlap,
+    stringsAsFactors     = FALSE
+  )
+
+  meta <- list(
+    sample_id         = sample_id,
+    source_h5ad       = file,
+    source_logic      = "SpaLinker::CalTLSfea with corrected coordinates, strict regex, normalized scoring",
+    official_inputs   = c("Plasma_B.cells_T.cells", "LC.50sig"),
+    b_or_plasma_features = b_res$features,
+    t_features         = t_res$features,
+    cluster_source    = "dominant Spatial niche abundances (all-zero -> 'all')",
+    cutoff            = 0.2,
+    filt.dist         = 4,
+    filt.spots        = 2,
+    coord_source      = "array_row/col with hex correction (sqrt(3)/2)",
+    lc50_overlap_genes = n_overlap,
+    regex_b_pattern   = "\\b(B[ ._]?cells?|Plasma[ ._]?cells?)\\b",
+    regex_t_pattern   = "CD4\\+|CD8\\+[ ._]?T\\b|T[ ._]cells?\\b|T[ ._]reg\\b  (ILC excluded from T for biological accuracy)",
+    score_method      = "AddModuleScore with slot=counts (matches GsetScore source)",
+    regfea_args       = list(r.dist = 2, method = "weighted", layer.method = "mean", adjust = 2)
+  )
+  write(jsonlite::toJSON(meta, pretty = TRUE, auto_unbox = TRUE),
+        file.path(sample_dir, "manifest.json"))
+
+  summary_row
+}
+
+# ---- Run all ----
+files <- list.files(input_dir, pattern = pattern, full.names = TRUE)
+files <- sort(files)
+if (!length(files)) stop("No .h5ad files found under input_dir")
+message("Running all ", length(files), " samples")
+
+summary_df <- do.call(rbind, lapply(files, score_one, out_root = output_dir))
+write.csv(summary_df, file.path(output_dir, "tls_official_relaxed_summary.csv"), row.names = FALSE)
+message("[done] ", nrow(summary_df), " samples written to ", output_dir)
