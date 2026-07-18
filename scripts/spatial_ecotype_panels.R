@@ -58,43 +58,38 @@ for (eco in paste0("E", 1:5)) {
       tls$TLS.score[is.na(tls$TLS.score)] <- 0
       tls_score <- tls$TLS.score
     }
-    p1 <- SpotVisualize(pos = dat$coords, meta = tls_score, title = "TLS score",
-          size = 1.5, f.color = c("#0077b6", "lightyellow", "#c32f27"),
-          p.width = 2.2, p.height = 2.2, return = TRUE)
+    p1 <- SpotVisualize(pos = dat$coords, meta = tls_score, title = "TLS",
+          size = 1.2, f.color = c("#0077b6", "lightyellow", "#c32f27"),
+          p.width = 1.8, p.height = 1.8, return = TRUE)
 
-    # panel 2: ecotype spots
     eco_pos <- rep(NA_character_, nrow(dat$coords))
     eco_pos[match(ss$barcode, rownames(dat$coords))] <- eco
     p2 <- SpotVisualize(pos = dat$coords, meta = eco_pos,
-          title = sprintf("%s (%d spots)", eco, n_spots),
-          size = 2, p.width = 2.2, p.height = 2.2,
+          title = eco, size = 1.5, p.width = 1.8, p.height = 1.8,
           return = TRUE, na.col = "lightgrey")
 
-    # panels 3-4: defining cell types (only in ecotype spots)
     p_extra <- list()
     for (ct in cts) {
       if (!ct %in% dat$ct) next
       vals <- rep(NA_real_, nrow(dat$coords))
       vals[match(ss$barcode, rownames(dat$coords))] <- dat$q05[ss$barcode, ct]
       p_extra[[length(p_extra) + 1]] <- SpotVisualize(pos = dat$coords,
-        meta = vals, title = ct, size = 1.5,
+        meta = vals, title = ct, size = 1.2,
         f.color = c("#0077b6", "lightyellow", "#c32f27"),
-        p.width = 2.2, p.height = 2.2, return = TRUE, na.col = "lightgrey")
+        p.width = 1.8, p.height = 1.8, return = TRUE, na.col = "lightgrey")
     }
 
     row_plots <- c(list(p1, p2), p_extra)
-    # sample label as left-side title
-    sample_label <- sprintf("%s", sid)
     plots[[length(plots) + 1]] <- plot_grid(
       plotlist = row_plots, ncol = length(row_plots),
-      labels = sample_label, label_size = 7, label_fontface = "plain",
+      labels = sid, label_size = 6, label_fontface = "plain",
       hjust = -0.05)
   }
 
   if (length(plots) == 0) next
   ncol <- 1
   combined <- plot_grid(plotlist = plots, ncol = ncol)
-  w <- (2 + length(cts)) * 2.4; h <- length(plots) * 2.4
+  w <- (2 + length(cts)) * 2.0; h <- length(plots) * 2.0
   pdf(file.path(out_dir, paste0("fig_spatial_", eco, "_panels.pdf")),
       width = w, height = h)
   print(combined); dev.off()
