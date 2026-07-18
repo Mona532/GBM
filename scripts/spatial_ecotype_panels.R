@@ -15,11 +15,11 @@ spot_map$ecotype <- eco_label[spot_map$unit_id]
 
 # defining cell types per ecotype
 eco_cts <- list(
-  E1 = c("B",        "Tfh-like_CD4"),
-  E2 = c("HEV-like_endothelial", "Glioma"),
-  E3 = c("Monocyte", "Macrophage"),
-  E4 = c("ILC3",     "ILC2"),
-  E5 = c("Glial",    "Tfh-like_CD4")
+  E1 = c("B","Tfh-like_CD4","CD8_T","CD4_T"),
+  E2 = c("HEV-like_endothelial","Glioma","Vascular"),
+  E3 = c("Monocyte","Macrophage","Dendritic","Plasma"),
+  E4 = c("ILC1","ILC2","ILC3","NK"),
+  E5 = c("Glial","FDC")
 )
 
 read_h5 <- function(path) {
@@ -60,13 +60,15 @@ for (eco in paste0("E", 1:5)) {
     }
     p1 <- SpotVisualize(pos = dat$coords, meta = tls_score, title = "TLS",
           size = 1.2, f.color = c("#0077b6", "lightyellow", "#c32f27"),
-          p.width = 1.8, p.height = 1.8, return = TRUE)
+          p.width = 1.8, p.height = 1.8, return = TRUE) +
+          theme(plot.title = element_text(size = 8))
 
     eco_pos <- rep(NA_character_, nrow(dat$coords))
     eco_pos[match(ss$barcode, rownames(dat$coords))] <- eco
     p2 <- SpotVisualize(pos = dat$coords, meta = eco_pos,
           title = eco, size = 1.5, p.width = 1.8, p.height = 1.8,
-          return = TRUE, na.col = "lightgrey")
+          return = TRUE, na.col = "lightgrey") +
+          theme(plot.title = element_text(size = 8))
 
     p_extra <- list()
     for (ct in cts) {
@@ -76,7 +78,8 @@ for (eco in paste0("E", 1:5)) {
       p_extra[[length(p_extra) + 1]] <- SpotVisualize(pos = dat$coords,
         meta = vals, title = ct, size = 1.2,
         f.color = c("#0077b6", "lightyellow", "#c32f27"),
-        p.width = 1.8, p.height = 1.8, return = TRUE, na.col = "lightgrey")
+        p.width = 1.8, p.height = 1.8, return = TRUE, na.col = "lightgrey") +
+        theme(plot.title = element_text(size = 8))
     }
 
     row_plots <- c(list(p1, p2), p_extra)
@@ -88,10 +91,7 @@ for (eco in paste0("E", 1:5)) {
 
   if (length(plots) == 0) next
   ncol <- 1
-  combined <- plot_grid(plotlist = plots, ncol = ncol) +
-    theme(plot.title = element_text(size = 8),
-          axis.title = element_text(size = 8),
-          axis.text  = element_text(size = 7))
+  combined <- plot_grid(plotlist = plots, ncol = ncol)
   w <- (2 + length(cts)) * 2.0; h <- length(plots) * 2.0
   pdf(file.path(out_dir, paste0("fig_spatial_", eco, "_panels.pdf")),
       width = w, height = h)
