@@ -2,7 +2,7 @@
 # spatial_ecotype_panels.R — 5 figures, one per ecotype,
 # each sample one row: TLS score → ecotype → celltype1 → celltype2
 # ============================================================
-library(rhdf5); library(SpaLinker); library(cowplot)
+library(rhdf5); library(SpaLinker); library(cowplot); library(ggplot2)
 
 root <- "E:/GBM"; out_dir <- file.path(root, "results", "spatial_ecotype_panels")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
@@ -88,7 +88,10 @@ for (eco in paste0("E", 1:5)) {
 
   if (length(plots) == 0) next
   ncol <- 1
-  combined <- plot_grid(plotlist = plots, ncol = ncol)
+  combined <- plot_grid(plotlist = plots, ncol = ncol) +
+    theme(plot.title = element_text(size = 8),
+          axis.title = element_text(size = 8),
+          axis.text  = element_text(size = 7))
   w <- (2 + length(cts)) * 2.0; h <- length(plots) * 2.0
   pdf(file.path(out_dir, paste0("fig_spatial_", eco, "_panels.pdf")),
       width = w, height = h)
