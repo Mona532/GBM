@@ -13,9 +13,22 @@ suppressMessages(library(NMF))
 
 root  <- "E:/GBM/results"
 comp  <- readRDS(file.path(root, "tls_pseudobulk_c2l_by_component.rds"))
+meta  <- read.csv(file.path(root, "tls_pseudobulk_component_metadata.csv"), check.names = FALSE)
+meta$unit_id <- as.character(meta$unit_id)
 # comp is component × cell_type; convert to numeric, drop empty rows/cols
 comp  <- as.matrix(comp); storage.mode(comp) <- "numeric"
+if (is.null(rownames(comp))) {
+  stop("Component matrix is missing unit_id rownames; cannot align with metadata.")
+}
+shared <- intersect(meta$unit_id, rownames(comp))
+if (length(shared) == 0) {
+  stop("No overlapping unit_id between component matrix and metadata.")
+}
+meta <- meta[match(shared, meta$unit_id), , drop = FALSE]
+comp <- comp[shared, , drop = FALSE]
+stopifnot(identical(meta$unit_id, rownames(comp)))
 comp  <- comp[rowSums(comp) > 0, colSums(comp) > 0, drop = FALSE]
+meta <- meta[match(rownames(comp), meta$unit_id), , drop = FALSE]
 
 # ---- positive-deviation transformation ----
 # 1. per-component proportion (removes density gradient, non-negative)
@@ -33,6 +46,10 @@ x_pos <- pmax(z - tau, 0)
 x_pos <- x_pos[, colSums(x_pos) > 0, drop = FALSE]
 # 7. transpose to cell_type × component for NMF
 x_nmf <- t(x_pos)
+sample_n <- table(meta$sample)
+sample_w <- 1 / as.numeric(sample_n[meta$sample])
+names(sample_w) <- meta$unit_id
+x_nmf <- sweep(x_nmf, 2, sample_w[colnames(x_nmf)], "*")
 
 cat(sprintf("NMF input: %d cell_types × %d components (tau=%.1f, nonzero=%.0f%%)\n",
             nrow(x_nmf), ncol(x_nmf), tau, 100 * mean(x_nmf > 0)))
